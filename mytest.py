@@ -30,7 +30,8 @@ try:
         base_options=BaseOptions(model_asset_path=model_path),
         running_mode=VisionRunningMode.LIVE_STREAM,
         result_callback=print_result,
-        num_faces=1
+        num_faces=1,
+        output_face_blendshapes=True
     )
     detector = FaceLandmarker.create_from_options(options)
 except Exception as e:
@@ -41,6 +42,10 @@ except Exception as e:
 # 開啟攝影機
 cap = cv2.VideoCapture(0)
 print("系統啟動成功！(手動繪圖模式)")
+
+closed_eyes_start_time = None  # 紀錄剛開始閉上眼睛的那個瞬間
+open_mouth_start_time = None  # 紀錄剛開始打開嘴巴的那個瞬間
+
 
 while cap.isOpened():
     success, frame = cap.read()
@@ -54,6 +59,51 @@ while cap.isOpened():
     # 傳送給模型
     timestamp = int(time.time() * 1000)
     detector.detect_async(mp_image, timestamp)
+
+    # 看看有沒有收到表情成績單
+    if latest_result and latest_result.face_blendshapes:
+        # 拿出畫面中第一個人的所有表情分數
+        blendshapes = latest_result.face_blendshapes[0]
+
+        eyeBlinkLeft = blendshapes[9].score
+        eyeBlinkRight = blendshapes[10].score
+        JawOpen = blendshapes[25].score
+
+        #判斷眼睛是否疲勞或關閉
+        if eyeBlinkLeft and eyeBlinkRight >= 0.6:
+            
+            if closed_eyes_start_time is None:
+                closed_eyes_start_time = time.time() #記錄一開始的時間
+
+            if time.time() - closed_eyes_start_time >= 0.5:  
+                    
+                print("名稱:", blendshapes[9].category_name)
+                print("分數:", blendshapes[9].score)
+                print("-------------------")
+                print("名稱:", blendshapes[10].category_name)
+                print("分數:", blendshapes[10].score)
+                print("-------------------")
+                #顯示警告
+                cv2.putText(frame, "WARNING: SLEEPING!", (100, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        else:
+            closed_eyes_start_time = None
+        
+        #判斷嘴巴是否打開
+        if JawOpen >= 0.5:
+            
+            if open_mouth_start_time is None:
+                open_mouth_start_time = time.time() #記錄一開始的時間
+
+            if time.time() - open_mouth_start_time >= 0.5:  
+                    
+                print("名稱:", blendshapes[25].category_name)
+                print("分數:", blendshapes[25].score)
+                print("-------------------")
+                #顯示警告
+                cv2.putText(frame, "WARNING: SLEEPING!", (100, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        else:
+            open_mouth_start_time = None
+    
 
     # 4. 手動把點畫出來 (不用官方繪圖工具，避免報錯)
     if latest_result and latest_result.face_landmarks:
