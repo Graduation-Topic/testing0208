@@ -3,6 +3,7 @@ import time
 import mediapipe as mp
 import numpy as np
 from collections import deque
+import winsound  # [新增] 匯入 Windows 音效模組
 
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -25,8 +26,16 @@ def print_result(result, _output_image, _timestamp_ms):
 # ==========================================
 def apply_night_mode(frame, clahe):
     """判斷畫面亮度，若太暗則套用 CLAHE 夜間增強模式"""
-    average_brightness = np.mean(frame)
-    if average_brightness < 80:
+    # [修改] 避免 OBS 黑邊或車窗外強光干擾，只取畫面正中心區域測光
+    h, w = frame.shape[:2]
+    center_region = frame[h//4 : 3*h//4, w//4 : 3*w//4]
+    average_brightness = np.mean(center_region)
+    
+    # [新增] 在畫面左下角顯示當前亮度數值，方便展示與除錯
+    cv2.putText(frame, f"Brightness: {average_brightness:.1f}", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+
+    # 將判定門檻稍微調降至 70
+    if average_brightness < 70:
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         cl = clahe.apply(l)
@@ -89,43 +98,55 @@ def generate_fatigue_report(timestamps, alertness, perclos, nod, jaw, turn, is_c
 
 class DriverFatigueDetector:
     def __init__(self):
-        # PERCLOS 滑動視窗設定 (視窗大小 150 幀)
-        self.perclos_window_size = 150
-        self.eye_closure_history = deque(maxlen=self.perclos_window_size)
-        self.open_mouth_start_time = None
-        self.yawn_timestamps = deque()
-        self.current_yawn_counted = False
+        # ================= PERCLOS 與打哈欠設定 =================
+        self.perclos_window_size = 150  # 滑動視窗的大小 (假設 30 FPS，約記錄過去 5 秒的資料)
+        self.eye_closure_history = deque(maxlen=self.perclos_window_size)  # 記錄過去 150 幀的閉眼狀態 (1為閉眼，0為睜眼)
+        
+        self.open_mouth_start_time = None  # 記錄「開始張大嘴巴」的精確時間戳記
+        self.yawn_timestamps = deque()     # 記錄每一次「判定為打哈欠」的時間，用來計算一分鐘內的哈欠次數
+        self.current_yawn_counted = False  # 旗標：避免駕駛連續張著嘴巴不放時，被重複計算為多次打哈欠
 
-        # 動態校正設定
-        self.CALIBRATION_FRAMES = 100
-        self.calibration_counter = 0
-        self.jaw_open_baseline_scores = []
-        self.eye_blink_baseline_scores = []
-        self.nod_ratio_baseline_scores = []
-        self.turn_ratio_baseline_scores = []
-        self.yawn_threshold = 0.8
-        self.eye_close_threshold = 0.40
-        self.nod_threshold = 0.30
-        self.turn_center_baseline = 0.5
-        self.TURN_MARGIN = 0.25
-        self.is_calibrated = False
+        # ================= 動態校正 (Calibration) 設定 =================
+        self.CALIBRATION_FRAMES = 100            # 開機時，要收集多少幀的資料來計算個人化基準值 (約 3-4 秒)
+        self.calibration_counter = 0             # 目前已經收集了幾幀 (從 0 數到 100)
+        
+        self.jaw_open_baseline_scores = []       # 暫存收集到的「正常閉嘴」分數
+        self.eye_blink_baseline_scores = []      # 暫存收集到的「正常睜眼」分數
+        self.nod_ratio_baseline_scores = []      # 暫存收集到的「正常平視」頭部垂直比例
+        self.turn_ratio_baseline_scores = []     # 暫存收集到的「直視前方」頭部水平比例
+        
+        self.yawn_threshold = 0.8                # 打哈欠的觸發門檻 (校正後會被個人的基準值覆蓋)
+        self.eye_close_threshold = 0.40          # 閉眼的觸發門檻 (校正後會被覆蓋)
+        self.nod_threshold = 0.30                # 點頭打瞌睡的觸發門檻 (校正後會被覆蓋)
+        self.turn_center_baseline = 0.5          # 臉部朝向正前方的基準比例 (校正後會被覆蓋)
+        self.TURN_MARGIN = 0.25                  # 容許轉頭的誤差範圍，數字越大越不容易誤判看後照鏡為分心
+        self.is_calibrated = False               # 系統是否已經完成初期校正？
 
-        self.last_calibration_time = time.time()
-        self.RECALIBRATION_INTERVAL = 300
+        # ================= 定時重新校正設定 =================
+        self.last_calibration_time = time.time() # 記錄最後一次完成校正的時間點
+        self.RECALIBRATION_INTERVAL = 300        # 每隔 300 秒 (5 分鐘) 自動重新校正一次，適應環境光線變化
 
-        # 紀錄數據供輸出圖表使用
-        self.log_timestamps = []
-        self.log_alertness = []
-        self.log_perclos = []
-        self.log_nod_ratio = []
-        self.log_jaw_open = []
-        self.log_turn_ratio = []
-        self.distraction_start_time = None
-        self.start_record_time = time.time()
+        # ================= 報表紀錄與計時變數 =================
+        self.log_timestamps = []                 # 記錄每一幀的時間 (畫 X 軸用)
+        self.log_alertness = []                  # 記錄每一幀的精神分數 (畫 Y 軸用)
+        self.log_perclos = []                    # 記錄每一幀的 PERCLOS 數值 (畫 Y 軸用)
+        self.log_nod_ratio = []                  # 記錄每一幀的低頭比例 (畫 Y 軸用)
+        self.log_jaw_open = []                   # 記錄每一幀的嘴巴分數 (畫 Y 軸用)
+        self.log_turn_ratio = []                 # 記錄每一幀的轉頭比例 (匯出 CSV 用)
+        self.distraction_start_time = None       # 記錄「視線離開正前方」的開始時間，用來計算看了旁邊幾秒
+        self.last_beep_time = 0                  # 記錄上次發出「嗶嗶」警告聲的時間，設定 1 秒冷卻時間避免破音
+        self.start_record_time = time.time()     # 程式啟動的基準時間 (Time = 0 秒)
 
     def force_recalibrate(self):
         """手動強制重新校正"""
         self.last_calibration_time = 0
+
+    def trigger_audio_alarm(self, current_time):
+        """發出警告音效 (設定 1 秒的冷卻時間避免連續狂叫卡頓)"""
+        if current_time - self.last_beep_time > 1.0:
+            # 參數 SND_ASYNC 代表非同步播放，程式不會被聲音卡住，畫面能繼續動
+            winsound.PlaySound("SystemHand", winsound.SND_ALIAS | winsound.SND_ASYNC)
+            self.last_beep_time = current_time
 
     def analyze_and_draw(self, frame, blendshapes, landmarks):
         """核心邏輯：接收特徵點，計算疲勞數值並直接繪製在畫面上"""
@@ -185,8 +206,13 @@ class DriverFatigueDetector:
         cv2.putText(frame, f"Nod Ratio: {nod_ratio:.3f} (Thr: {self.nod_threshold:.3f})", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 150, 255), 2)
         cv2.putText(frame, f"Turn Ratio: {turn_ratio:.3f} (Center: {self.turn_center_baseline:.3f})", (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 150, 255), 2)
         
-        if is_nodding_off: cv2.putText(frame, "WARNING: HEAD DROP!", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        if distraction_duration > 3.0: cv2.putText(frame, "WARNING: DISTRACTED (LOOKING AWAY)!", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
+        if is_nodding_off: 
+            cv2.putText(frame, "WARNING: HEAD DROP!", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            self.trigger_audio_alarm(current_time) # 觸發音效
+            
+        if distraction_duration > 3.0: 
+            cv2.putText(frame, "WARNING: DISTRACTED (LOOKING AWAY)!", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
+            self.trigger_audio_alarm(current_time) # 觸發音效
         elif distraction_duration > 1.5: cv2.putText(frame, "Pay Attention to the Road...", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
             
         if len(self.eye_closure_history) == self.perclos_window_size:
@@ -194,6 +220,7 @@ class DriverFatigueDetector:
             if current_perclos >= 0.15:
                 print(f"[PERCLOS 警告] 閉眼率達 {current_perclos*100:.1f}%, 左眼: {eyeBlinkLeft:.3f}, 右眼: {eyeBlinkRight:.3f}")
                 cv2.putText(frame, "WARNING: FATIGUE DETECTED!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                self.trigger_audio_alarm(current_time) # 觸發音效
         else:
             cv2.putText(frame, f"PERCLOS: Calibrating ({len(self.eye_closure_history)}/{self.perclos_window_size})", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         
@@ -228,6 +255,7 @@ class DriverFatigueDetector:
             yawn_duration = current_time - self.open_mouth_start_time
             if yawn_duration >= 1.5:
                 cv2.putText(frame, "WARNING: SEVERE YAWNING!", (50, 180), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                self.trigger_audio_alarm(current_time) # 觸發音效
                 if not self.current_yawn_counted:
                     self.yawn_timestamps.append(current_time)
                     self.current_yawn_counted = True
@@ -271,9 +299,14 @@ show_landmarks = True
 # [效能優化] 在迴圈外先建立好 CLAHE 增強器，避免每幀重複建立浪費資源
 clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
 
+# [新增] FPS 計算用變數
+prev_frame_time = 0
+
 while cap.isOpened():
     success, frame = cap.read()
     if not success: break
+    
+    new_frame_time = time.time()
 
     # 鏡像並轉 RGB
     frame = cv2.flip(frame, 1)
@@ -311,9 +344,15 @@ while cap.isOpened():
                 # 畫綠色小點
                 cv2.circle(frame, (cx, cy), 1, (0, 255, 0), -1)
 
-                # 畢業專題特效：特別標註鼻尖 (1) 與 左右臉頰邊界 (234, 454)
-                if idx in [1, 234, 454]:
+                # 畢業專題特效：特別標註重要的核心特徵點 (額頭:10, 鼻尖:1, 下巴:152, 左右邊界:234, 454)
+                if idx in [1, 10, 152, 234, 454]:
                     cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
+
+    # 計算並顯示 FPS
+    fps = 1 / (new_frame_time - prev_frame_time)
+    prev_frame_time = new_frame_time
+    fps = int(fps)
+    cv2.putText(frame, f"FPS: {fps}", (frame.shape[1] - 120, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 255, 100), 2)
 
     cv2.imshow('Final Project Demo', frame)
     
