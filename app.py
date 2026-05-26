@@ -2,6 +2,7 @@ import cv2
 import time
 import os
 from flask import Flask, render_template, Response, jsonify, send_file
+from threading import Thread
 from detector import AIVisionEngine
 
 app = Flask(__name__)
@@ -26,10 +27,10 @@ def generate_frames():
         # 1. 交給我們的 AI 引擎處理
         processed_frame = engine.process_frame(frame)
 
-        # 2. 計算 FPS 並繪製
+        # 2. 計算 FPS 並存入引擎供前端讀取
         if prev_frame_time != 0:
             fps = int(1 / (new_frame_time - prev_frame_time))
-            cv2.putText(processed_frame, f"FPS: {fps}", (processed_frame.shape[1] - 120, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 255, 100), 2)
+            engine.current_fps = fps
         prev_frame_time = new_frame_time
 
         # 3. 將 OpenCV 的圖像編碼轉換為 JPEG，並利用 Generator 產出串流
@@ -61,8 +62,10 @@ def toggle_landmarks():
 
 @app.route('/generate_report', methods=['POST'])
 def generate_report():
-    engine.generate_report()
-    return jsonify({"status": "success", "message": "報表已成功生成於後端資料夾 (fatigue_data.csv / fatigue_report.png)！"})
+    # 將耗時的報表生成任務放到背景執行緒，避免網頁請求被卡住
+    thread = Thread(target=engine.generate_report)
+    thread.start()
+    return jsonify({"status": "success", "message": "✅ 指令已送出！報表將於背景生成..."})
 
 @app.route('/report_image')
 def report_image():

@@ -17,18 +17,17 @@ def apply_night_mode(frame, clahe):
     """判斷畫面亮度，若太暗則套用 CLAHE 夜間增強模式"""
     h, w = frame.shape[:2]
     center_region = frame[h//4 : 3*h//4, w//4 : 3*w//4]
-    average_brightness = np.mean(center_region)
-    
-    cv2.putText(frame, f"Brightness: {average_brightness:.1f}", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+    average_brightness = float(np.mean(center_region))
 
+    is_night_mode = False
     if average_brightness < 70:
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         cl = clahe.apply(l)
         merged_lab = cv2.merge((cl, a, b))
         frame = cv2.cvtColor(merged_lab, cv2.COLOR_LAB2BGR)
-        cv2.putText(frame, "CLAHE Night Mode ON", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-    return frame
+        is_night_mode = True
+    return frame, average_brightness, is_night_mode
 
 def generate_fatigue_report(timestamps, alertness, perclos, nod, jaw, turn, is_calibrated, nod_thr, yawn_thr):
     """程式結束或網頁觸發後，將收集到的數據匯出為 CSV 與折線圖"""
@@ -109,6 +108,7 @@ class DriverFatigueDetector:
         self.distraction_start_time = None
         self.last_beep_time = 0
         self.start_record_time = time.time()
+        self.warning_messages = []
 
     def force_recalibrate(self):
         self.last_calibration_time = 0
@@ -120,6 +120,7 @@ class DriverFatigueDetector:
 
     def analyze_and_draw(self, frame, blendshapes, landmarks):
         current_time = time.time()
+        self.warning_messages = []
         
         eyeBlinkLeft = blendshapes[9].score
         eyeBlinkRight = blendshapes[10].score
@@ -165,38 +166,29 @@ class DriverFatigueDetector:
         self.log_jaw_open.append(JawOpen)
         self.log_turn_ratio.append(turn_ratio)
 
-        score_color = (0, 255, 0) if spirit_score > 60 else (0, 255, 255) if spirit_score > 30 else (0, 0, 255)
-        cv2.putText(frame, f"Alertness: {spirit_score}/100", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, score_color, 2)
-        cv2.putText(frame, f"Nod Ratio: {nod_ratio:.3f} (Thr: {self.nod_threshold:.3f})", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 150, 255), 2)
-        cv2.putText(frame, f"Turn Ratio: {turn_ratio:.3f} (Center: {self.turn_center_baseline:.3f})", (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 150, 255), 2)
-        
         if is_nodding_off: 
-            cv2.putText(frame, "WARNING: HEAD DROP!", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            self.warning_messages.append("WARNING: HEAD DROP!")
             self.trigger_audio_alarm(current_time)
             
         if distraction_duration > 3.0: 
-            cv2.putText(frame, "WARNING: DISTRACTED!", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
+            self.warning_messages.append("WARNING: DISTRACTED!")
             self.trigger_audio_alarm(current_time)
         elif distraction_duration > 1.5: 
-            cv2.putText(frame, "Pay Attention to the Road...", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            self.warning_messages.append("Pay Attention to the Road...")
             
         if len(self.eye_closure_history) == self.perclos_window_size:
-            cv2.putText(frame, f"PERCLOS: {current_perclos*100:.1f}%", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             if current_perclos >= 0.15:
-                cv2.putText(frame, "WARNING: FATIGUE DETECTED!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                self.warning_messages.append("WARNING: FATIGUE DETECTED!")
                 self.trigger_audio_alarm(current_time)
-        else:
-            cv2.putText(frame, f"PERCLOS: Calibrating ({len(self.eye_closure_history)}/{self.perclos_window_size})", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         
         while self.yawn_timestamps and current_time - self.yawn_timestamps[0] > 60: self.yawn_timestamps.popleft()
-        cv2.putText(frame, f"Yawns (1min): {len(self.yawn_timestamps)}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
 
         if self.is_calibrated and (current_time - self.last_calibration_time > self.RECALIBRATION_INTERVAL):
             self.is_calibrated, self.calibration_counter = False, 0
             for lst in [self.jaw_open_baseline_scores, self.eye_blink_baseline_scores, self.nod_ratio_baseline_scores, self.turn_ratio_baseline_scores]: lst.clear()
 
         if not self.is_calibrated:
-            cv2.putText(frame, f"Calibrating... Look Straight ({self.calibration_counter}/{self.CALIBRATION_FRAMES})", (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            self.warning_messages.append(f"Calibrating... Look Straight ({self.calibration_counter}/{self.CALIBRATION_FRAMES})")
             if self.calibration_counter < self.CALIBRATION_FRAMES:
                 self.jaw_open_baseline_scores.append(JawOpen)
                 self.eye_blink_baseline_scores.append(max(eyeBlinkLeft, eyeBlinkRight))
@@ -215,12 +207,13 @@ class DriverFatigueDetector:
                 self.open_mouth_start_time, self.current_yawn_counted = current_time, False
             yawn_duration = current_time - self.open_mouth_start_time
             if yawn_duration >= 1.5:
-                cv2.putText(frame, "WARNING: SEVERE YAWNING!", (50, 180), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                self.warning_messages.append("WARNING: SEVERE YAWNING!")
                 self.trigger_audio_alarm(current_time)
                 if not self.current_yawn_counted:
                     self.yawn_timestamps.append(current_time)
                     self.current_yawn_counted = True
-            elif yawn_duration >= 0.5: cv2.putText(frame, "WARNING: YAWNING...", (50, 180), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            elif yawn_duration >= 0.5: 
+                self.warning_messages.append("WARNING: YAWNING...")
         else:
             self.open_mouth_start_time, self.current_yawn_counted = None, False
 
@@ -231,6 +224,9 @@ class AIVisionEngine:
         self.fatigue_detector = DriverFatigueDetector()
         self.clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
         self.show_landmarks = True
+        self.current_brightness = 0.0
+        self.is_night_mode = False
+        self.current_fps = 0
         
         def result_callback(result, _output_image, _timestamp_ms):
             self.latest_result = result
@@ -270,12 +266,26 @@ class AIVisionEngine:
             "alertness": fd.log_alertness[-max_points:],
             "perclos": fd.log_perclos[-max_points:],
             "nod": fd.log_nod_ratio[-max_points:],
-            "jaw": fd.log_jaw_open[-max_points:]
+            "jaw": fd.log_jaw_open[-max_points:],
+            "current_alertness": fd.log_alertness[-1] if fd.log_alertness else 100,
+            "current_nod": fd.log_nod_ratio[-1] if fd.log_nod_ratio else 0,
+            "nod_thr": fd.nod_threshold,
+            "current_turn": fd.log_turn_ratio[-1] if fd.log_turn_ratio else 0.5,
+            "turn_center": fd.turn_center_baseline,
+            "current_perclos": (fd.log_perclos[-1]/100) if fd.log_perclos else 0,
+            "perclos_calibrating": len(fd.eye_closure_history) < fd.perclos_window_size,
+            "perclos_history_len": len(fd.eye_closure_history),
+            "perclos_window": fd.perclos_window_size,
+            "yawns": len(fd.yawn_timestamps),
+            "warnings": fd.warning_messages if hasattr(fd, 'warning_messages') else [],
+            "brightness": getattr(self, 'current_brightness', 0.0),
+            "night_mode": getattr(self, 'is_night_mode', False),
+            "fps": getattr(self, 'current_fps', 0)
         }
 
     def process_frame(self, frame):
         """接收原始畫面，處理完畢後回傳帶有 UI 圖層的畫面"""
-        frame = apply_night_mode(frame, self.clahe)
+        frame, self.current_brightness, self.is_night_mode = apply_night_mode(frame, self.clahe)
         
         # 轉存給 MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

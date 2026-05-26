@@ -4,133 +4,226 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>駕駛疲勞偵測系統</title>
-    <!-- 引入 Chart.js 用於繪製即時圖表 -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body {
-            background-color: #2c3e50;
-            color: white;
-            text-align: center;
             font-family: 'Microsoft JhengHei', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .container {
+            display: flex;
+            flex-direction: row;
+            gap: 20px;
+            flex: 1;
+            min-height: 0;
+        }
+        .left-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            max-width: 55%;
+        }
+        .right-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            overflow-y: auto;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         .video-container {
-            margin-top: 20px;
-            border: 5px solid #34495e;
+            position: relative;
+            background: #000;
             border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .video-container img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .status-bar {
+            background: white;
+            padding: 15px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        .status-item {
+            background: #e9ecef;
+            padding: 8px 12px;
+            border-radius: 5px;
+        }
+        .warnings {
+            min-height: 60px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .warning-msg {
+            background: #ff4d4f;
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 18px;
+            font-weight: bold;
+            text-align: center;
+            animation: blink 1s infinite alternate;
+        }
+        @keyframes blink {
+            from { opacity: 1; }
+            to { opacity: 0.7; }
         }
         .controls {
-            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
         }
         button {
-            padding: 12px 24px;
+            padding: 10px 20px;
             font-size: 16px;
-            margin: 0 10px;
             cursor: pointer;
-            background-color: #3498db;
-            color: white;
             border: none;
-            border-radius: 8px;
-            font-family: 'Microsoft JhengHei', sans-serif;
+            border-radius: 5px;
+            background-color: #007bff;
+            color: white;
+            transition: background 0.3s;
         }
-        button:hover {
-            background-color: #2980b9;
-        }
-        .chart-container {
-            width: 800px;
-            margin: 20px auto;
-            background-color: #34495e;
-            border-radius: 10px;
-            padding: 15px;
+        button:hover { background-color: #0056b3; }
+        canvas {
+            max-height: 250px;
+            width: 100%;
         }
     </style>
 </head>
+<div id="notification-container" style="position: fixed; top: 20px; right: 20px; z-index: 1000; display: flex; flex-direction: column; gap: 10px;"></div>
+
 <body>
-    <h1>🚗 駕駛疲勞偵測系統即時影像 (Web Stream)</h1>
-    <img class="video-container" src="{{ url_for('video_feed') }}" width="800" height="600" alt="Camera Stream">
-    
-    <div class="controls">
-        <button onclick="triggerAction('/force_recalibrate')">🎯 強制重新校正</button>
-        <button onclick="triggerAction('/toggle_landmarks')">👁️ 切換特徵點顯示</button>
-        <button onclick="triggerAction('/generate_report')">📊 生成分析報告</button>
+    <div class="header">
+        <h2>🚗 駕駛疲勞偵測系統儀表板</h2>
     </div>
-
-    <!-- 用來顯示提示訊息的區塊 -->
-    <div id="message-box" style="margin-top: 15px; font-size: 18px; color: #f1c40f; height: 25px;"></div>
     
-    <!-- 實時狀態圖表區塊 (Chart.js) -->
-    <div class="chart-container">
-        <canvas id="realtimeChart" height="100"></canvas>
-    </div>
+    <div class="container">
+        <!-- 左邊：攝影機畫面與控制區 -->
+        <div class="left-panel">
+            <div class="video-container">
+                <img src="/video_feed" alt="Video Feed">
+            </div>
+            
+            <div class="warnings" id="warnings-container"></div>
+            
+            <div class="status-bar">
+                <div class="status-item">FPS: <span id="fps">0</span></div>
+                <div class="status-item">環境亮度: <span id="brightness">0</span></div>
+                <div class="status-item" id="night-mode" style="display:none; background: #ffe58f; color: #d48806;">夜間模式啟動中</div>
+                <div class="status-item">一分鐘內哈欠: <span id="yawns">0</span> 次</div>
+            </div>
 
-    <!-- 用來顯示圖表的區塊 -->
-    <div style="margin-top: 20px;">
-        <img id="report-view" style="display: none; max-width: 800px; border: 3px solid #34495e; border-radius: 10px;" alt="分析報告圖表">
+            <div class="controls">
+                <button onclick="handleButtonClick('/force_recalibrate')">強制重新校正</button>
+                <button onclick="handleButtonClick('/toggle_landmarks')">切換特徵點顯示</button>
+                <button onclick="handleButtonClick('/generate_report')">生成數據報表</button>
+            </div>
+        </div>
+
+        <!-- 右邊：圖表與即時數據 -->
+        <div class="right-panel">
+            <div class="status-bar">
+                <div class="status-item">精神分數: <span id="alertness">100</span>/100</div>
+                <div class="status-item">PERCLOS: <span id="perclos">0</span>%</div>
+                <div class="status-item">低頭比例: <span id="nod-ratio">0.5</span></div>
+                <div class="status-item">轉頭比例: <span id="turn-ratio">0.5</span></div>
+            </div>
+
+            <canvas id="alertnessChart"></canvas>
+            <canvas id="perclosChart"></canvas>
+            <canvas id="nodChart"></canvas>
+        </div>
     </div>
 
     <script>
-        function triggerAction(endpoint) {
-            const msgBox = document.getElementById('message-box');
-            msgBox.innerText = "處理中..."; // 按下按鈕時先顯示處理中
+        function showNotification(message, isSuccess = true) {
+            const container = document.getElementById('notification-container');
+            const notif = document.createElement('div');
+            notif.textContent = message;
+            notif.style.padding = '10px 20px';
+            notif.style.backgroundColor = isSuccess ? '#28a745' : '#dc3545';
+            notif.style.color = 'white';
+            notif.style.borderRadius = '5px';
+            notif.style.boxShadow = '0 2px 5px rgba(0,0,0,0.2)';
+            notif.style.opacity = '0';
+            notif.style.transition = 'opacity 0.3s ease-in-out';
+            container.appendChild(notif);
+            
+            setTimeout(() => notif.style.opacity = '1', 10); // Fade in
 
-            fetch(endpoint, { method: 'POST' })
-                .then(response => response.json())
-                .then(data => {
-                    // 不使用 alert，改用文字顯示，這樣畫面就不會被凍結卡住
-                    msgBox.innerText = data.message;
-                    
-                    // 如果是生成報表，則更新圖片並顯示
-                    if(endpoint === '/generate_report') {
-                        const reportImg = document.getElementById('report-view');
-                        reportImg.src = "/report_image?t=" + new Date().getTime(); // 加上時間戳，避免瀏覽器快取舊圖片
-                        reportImg.style.display = "inline-block";
-                    }
-                    
-                    // 3 秒後自動清空訊息
-                    setTimeout(() => { if(msgBox.innerText === data.message) msgBox.innerText = ""; }, 3000);
-                })
-                .catch(error => console.error('Error:', error));
+            // Fade out and remove after 3 seconds
+            setTimeout(() => {
+                notif.style.opacity = '0';
+                setTimeout(() => container.removeChild(notif), 300);
+            }, 3000);
         }
 
-        // --- 實時圖表 (Chart.js) 設定 ---
-        const ctx = document.getElementById('realtimeChart').getContext('2d');
-        const realtimeChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [
-                    { label: '精神分數', borderColor: '#2ecc71', data: [], fill: false, tension: 0.2, pointRadius: 0 },
-                    { label: '閉眼率(%)', borderColor: '#e74c3c', data: [], fill: false, tension: 0.2, pointRadius: 0 },
-                    { label: '低頭比例', borderColor: '#9b59b6', data: [], fill: false, tension: 0.2, pointRadius: 0, yAxisID: 'y1' },
-                    { label: '嘴巴張開', borderColor: '#f1c40f', data: [], fill: false, tension: 0.2, pointRadius: 0, yAxisID: 'y1' }
-                ]
-            },
-            options: {
-                responsive: true,
-                animation: false, // 關閉動畫讓即時更新更順暢
-                scales: {
-                    x: { ticks: { color: '#bdc3c7' }, grid: { color: '#2c3e50' } },
-                    y: { min: 0, max: 100, position: 'left', ticks: { color: '#bdc3c7' }, grid: { color: '#2c3e50' } },
-                    y1: { min: 0, max: 1, position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#bdc3c7' } }
-                },
-                plugins: { legend: { labels: { color: 'white' } } }
-            }
+        function handleButtonClick(endpoint) {
+            fetch(endpoint, { method: 'POST' })
+                .then(r => r.json())
+                .then(d => showNotification(d.message, d.status === 'success'));
+        }
+
+        const commonOpts = { responsive: true, scales: { x: { display: false }, y: { beginAtZero: true } } };
+        const createChart = (id, label, color, max) => new Chart(document.getElementById(id).getContext('2d'), {
+            type: 'line', data: { labels: [], datasets: [{ label, data: [], borderColor: color, tension: 0.1 }] },
+            options: { ...commonOpts, scales: { y: { min: 0, max } } }
         });
 
-        // 每 0.5 秒向後端請求一次最新數據並重繪圖表
-        setInterval(() => {
-            fetch('/realtime_data')
-                .then(res => res.json())
-                .then(data => {
-                    if(data.timestamps && data.timestamps.length > 0) {
-                        realtimeChart.data.labels = data.timestamps.map(t => t.toFixed(1) + 's');
-                        realtimeChart.data.datasets[0].data = data.alertness;
-                        realtimeChart.data.datasets[1].data = data.perclos;
-                        realtimeChart.data.datasets[2].data = data.nod;
-                        realtimeChart.data.datasets[3].data = data.jaw;
-                        realtimeChart.update();
-                    }
-                })
-                .catch(err => console.error("無法更新實時圖表:", err));
+        const alertnessChart = createChart('alertnessChart', '精神分數 (Alertness)', '#28a745', 100);
+        const perclosChart = createChart('perclosChart', '閉眼率 PERCLOS (%)', '#007bff', 100);
+        const nodChart = createChart('nodChart', '低頭比例 (Nod Ratio)', '#6f42c1', 1);
+
+        setInterval(async () => {
+            const res = await fetch('/realtime_data');
+            const data = await res.json();
+
+            document.getElementById('fps').innerText = data.fps;
+            document.getElementById('brightness').innerText = data.brightness.toFixed(1);
+            document.getElementById('yawns').innerText = data.yawns;
+            document.getElementById('alertness').innerText = data.current_alertness;
+            document.getElementById('night-mode').style.display = data.night_mode ? 'block' : 'none';
+            document.getElementById('perclos').innerText = data.perclos_calibrating ? `校正中(${data.perclos_history_len}/${data.perclos_window})` : (data.current_perclos * 100).toFixed(1);
+            document.getElementById('nod-ratio').innerText = `${data.current_nod.toFixed(3)} (門檻: ${data.nod_thr.toFixed(3)})`;
+            document.getElementById('turn-ratio').innerText = `${data.current_turn.toFixed(3)} (中心: ${data.turn_center.toFixed(3)})`;
+            
+            document.getElementById('warnings-container').innerHTML = (data.warnings || []).map(msg => `<div class="warning-msg">${msg}</div>`).join('');
+
+            const labels = data.timestamps.map(t => t.toFixed(1));
+            alertnessChart.data.labels = perclosChart.data.labels = labels;
+            alertnessChart.data.datasets[0].data = data.alertness;
+            perclosChart.data.datasets[0].data = data.perclos;
+            nodChart.data.datasets[0].data = data.nod;
+            
+            [alertnessChart, perclosChart, nodChart].forEach(c => c.update());
         }, 500);
     </script>
 </body>
