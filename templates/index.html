@@ -51,13 +51,17 @@
             border-radius: 10px;
             overflow: hidden;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            display: flex;
-            justify-content: center;
-            align-items: center;
+            width: 100%;
+            height: 70vh; /* 將固定畫布的高度限制設在「容器」上 */
+            display: block; /* 移除 flex，避免瀏覽器對串流影像重新計算大小 */
         }
         .video-container img {
+            position: absolute;
+            top: 0;
+            left: 0;
             width: 100%;
-            height: auto;
+            height: 100%;
+            object-fit: contain;
             display: block;
         }
         .status-bar {
@@ -116,6 +120,17 @@
             max-height: 250px;
             width: 100%;
         }
+        
+        /* 響應式設計 (手機畫面自適應) */
+        @media (max-width: 900px) {
+            body { height: auto; min-height: 100vh; }
+            .container { flex-direction: column; }
+            .video-container { height: 50vh; } /* 手機版修改的是容器高度 */
+            .left-panel { max-width: 100%; }
+            .right-panel { 
+                overflow-y: visible; 
+            }
+        }
     </style>
 </head>
 <div id="notification-container" style="position: fixed; top: 20px; right: 20px; z-index: 1000; display: flex; flex-direction: column; gap: 10px;"></div>
@@ -145,6 +160,7 @@
                 <button onclick="handleButtonClick('/force_recalibrate')">強制重新校正</button>
                 <button onclick="handleButtonClick('/toggle_landmarks')">切換特徵點顯示</button>
                 <button onclick="handleButtonClick('/generate_report')">生成數據報表</button>
+                <button onclick="handleButtonClick('/toggle_aspect_ratio')">切換畫面比例</button>
             </div>
         </div>
 

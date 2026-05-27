@@ -10,12 +10,35 @@ app = Flask(__name__)
 # 建立 AI 視覺引擎實例
 engine = AIVisionEngine(model_path='face_landmarker.task')
 
+# 全域變數控制相機比例
+current_obs_mode = "9:16"
+camera_mode_changed = False
+
 def generate_frames():
     """讀取鏡頭，並產生 MJPEG 串流供網頁使用"""
-    cap = cv2.VideoCapture(0)
+    global current_obs_mode, camera_mode_changed
+
+    def open_camera():
+        # 重新開啟鏡頭並設定對應的解析度
+        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        if current_obs_mode == "9:16":
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1080)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1920)
+        else:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+        return cap
+
+    cap = open_camera()
     prev_frame_time = 0
 
     while True:
+        if camera_mode_changed:
+            cap.release()
+            cap = open_camera()
+            camera_mode_changed = False
+            prev_frame_time = 0 # 重置 FPS 計算
+
         success, frame = cap.read()
         if not success:
             break
@@ -78,6 +101,14 @@ def report_image():
 def realtime_data():
     """回傳即時狀態數據給前端畫圖 (擷取最新 100 筆)"""
     return jsonify(engine.get_realtime_data(100))
+
+@app.route('/toggle_aspect_ratio', methods=['POST'])
+def toggle_aspect_ratio():
+    """切換畫面比例 16:9 / 9:16 的 API"""
+    global current_obs_mode, camera_mode_changed
+    current_obs_mode = "16:9" if current_obs_mode == "9:16" else "9:16"
+    camera_mode_changed = True
+    return jsonify({"status": "success", "message": f"✅ 已切換為 {current_obs_mode} 模式，相機重新啟動中..."})
 
 if __name__ == '__main__':
     print("伺服器啟動中，請打開瀏覽器前往 http://localhost:5000")
