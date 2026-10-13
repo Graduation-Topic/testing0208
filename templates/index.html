@@ -116,7 +116,7 @@
             transition: background 0.3s;
         }
         button:hover { background-color: #0056b3; }
-        canvas {
+        .right-panel canvas {
             max-height: 250px;
             width: 100%;
         }
@@ -145,9 +145,9 @@
         <div class="left-panel">
             <div class="video-container" style="position: relative;">
                 <!-- 本機鏡頭畫面 -->
-                <video id="webcam" autoplay playsinline style="width: 100%; height: 100%; object-fit: contain;"></video>
+                <video id="webcam" autoplay playsinline style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1);"></video>
                 <!-- 用來繪製綠色特徵點的透明畫布 -->
-                <canvas id="output_canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); pointer-events: none;"></canvas>
+                <canvas id="output_canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1); pointer-events: none;"></canvas>
             </div>
             
             <div class="warnings" id="warnings-container"></div>
@@ -160,9 +160,9 @@
             </div>
 
             <div class="controls">
-                <button onclick="handleButtonClick('/force_recalibrate')">強制重新校正</button>
-                <button onclick="handleButtonClick('/toggle_landmarks')">切換特徵點顯示</button>
-                <button onclick="handleButtonClick('/generate_report')">生成數據報表</button>
+                <button onclick="window.forceRecalibrate()">強制重新校正</button>
+                <button onclick="window.toggleLandmarks()">切換特徵點顯示</button>
+                <button onclick="showNotification('即將支援匯出報表功能')">生成數據報表</button>
                 <button onclick="handleButtonClick('/toggle_aspect_ratio')">切換畫面比例</button>
             </div>
         </div>
@@ -182,77 +182,7 @@
         </div>
     </div>
 
-    <script type="module">
-        import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
-
-        const video = document.getElementById('webcam');
-        const canvasElement = document.getElementById('output_canvas');
-        const canvasCtx = canvasElement.getContext('2d');
-        
-        let faceLandmarker;
-        let lastVideoTime = -1;
-
-        // 步驟 1：載入 MediaPipe 邊緣運算模型 (WebAssembly)
-        async function initializeFaceLandmarker() {
-            const filesetResolver = await FilesetResolver.forVisionTasks(
-                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
-            );
-            faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
-                baseOptions: {
-                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-                    delegate: "GPU" // 直接調用手機/筆電的顯示卡硬體加速
-                },
-                outputFaceBlendshapes: true,
-                runningMode: "VIDEO",
-                numFaces: 1
-            });
-            console.log("✅ 邊緣運算模型載入完成");
-            startCamera();
-        }
-
-        // 步驟 2：直接啟動使用者的設備鏡頭
-        function startCamera() {
-            navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } })
-                .then((stream) => {
-                    video.srcObject = stream;
-                    video.addEventListener("loadeddata", predictWebcam);
-                })
-                .catch((err) => console.error("❌ 鏡頭開啟失敗:", err));
-        }
-
-        // 步驟 3：建立零延遲的偵測迴圈 (取代原 Python 的 while True)
-        async function predictWebcam() {
-            canvasElement.width = video.videoWidth;
-            canvasElement.height = video.videoHeight;
-            
-            let startTimeMs = performance.now();
-            if (lastVideoTime !== video.currentTime) {
-                lastVideoTime = video.currentTime;
-                
-                // 執行臉部推論
-                const results = faceLandmarker.detectForVideo(video, startTimeMs);
-                canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-                
-                if (results.faceBlendshapes && results.faceBlendshapes.length > 0) {
-                    const blendshapes = results.faceBlendshapes[0].categories;
-                    
-                    // 這裡完美對應你原本 Python 的 eyeBlinkLeft, eyeBlinkRight, JawOpen 取值邏輯
-                    const eyeBlinkLeft = blendshapes.find(s => s.categoryName === "eyeBlinkLeft").score;
-                    const eyeBlinkRight = blendshapes.find(s => s.categoryName === "eyeBlinkRight").score;
-                    const jawOpen = blendshapes.find(s => s.categoryName === "jawOpen").score;
-
-                    // 測試：將分數即時印在網頁畫面上
-                    document.getElementById('perclos').innerText = (Math.max(eyeBlinkLeft, eyeBlinkRight) * 100).toFixed(0);
-                    
-                    // [接下來將在此處移植 DriverFatigueDetector 的滑動視窗與打分邏輯]
-                }
-            }
-            // 利用瀏覽器渲染機制形成無限迴圈
-            window.requestAnimationFrame(predictWebcam);
-        }
-
-        // 啟動系統
-        initializeFaceLandmarker();
-    </script>   
+    <!-- 引入邊緣運算核心邏輯 -->
+    <script type="module" src="{{ url_for('static', filename='js/main.js') }}"></script>>  
 </body>
 </html>

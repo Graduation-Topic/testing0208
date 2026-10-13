@@ -1,116 +1,45 @@
-import cv2
-import time
-import os
-from flask import Flask, render_template, Response, jsonify, send_file
-from threading import Thread
-from detector import AIVisionEngine
+from flask import Flask, render_template, request, jsonify
+import datetime
 
 app = Flask(__name__)
 
-# 建立 AI 視覺引擎實例
-engine = AIVisionEngine(model_path='face_landmarker.task')
-
-# 全域變數控制相機比例
-current_obs_mode = "9:16"
-camera_mode_changed = False
-
-def generate_frames():
-    """讀取鏡頭，並產生 MJPEG 串流供網頁使用"""
-    global current_obs_mode, camera_mode_changed
-
-    def open_camera():
-        # 重新開啟鏡頭並設定對應的解析度
-        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        if current_obs_mode == "9:16":
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1080)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1920)
-        else:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-        return cap
-
-    cap = open_camera()
-    prev_frame_time = 0
-
-    while True:
-        if camera_mode_changed:
-            cap.release()
-            cap = open_camera()
-            camera_mode_changed = False
-            prev_frame_time = 0 # 重置 FPS 計算
-
-        success, frame = cap.read()
-        if not success:
-            break
-
-        # 鏡像翻轉
-        frame = cv2.flip(frame, 1)
-        new_frame_time = time.time()
-
-        # 1. 交給我們的 AI 引擎處理
-        processed_frame = engine.process_frame(frame)
-
-        # 2. 計算 FPS 並存入引擎供前端讀取
-        if prev_frame_time != 0:
-            fps = int(1 / (new_frame_time - prev_frame_time))
-            engine.current_fps = fps
-        prev_frame_time = new_frame_time
-
-        # 3. 將 OpenCV 的圖像編碼轉換為 JPEG，並利用 Generator 產出串流
-        ret, buffer = cv2.imencode('.jpg', processed_frame)
-        frame_bytes = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+# 暫存違規紀錄的 List (未來你可以把它改成存入 SQLite 或是寫成 CSV 檔案)
+fatigue_logs = []
 
 @app.route('/')
 def index():
-    """載入首頁範本"""
+    """載入前端網頁 (AI 現在完全在這個網頁裡面跑)"""
     return render_template('index.html')
 
-@app.route('/video_feed')
-def video_feed():
-    """負責吐出串流影像的 API 路徑"""
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+@app.route('/api/log_warning', methods=['POST'])
+def log_warning():
+    """接收前端 (JavaScript) 傳來的疲勞或違規事件"""
+    data = request.json
+    
+    # 建立一筆新的違規紀錄
+    event = {
+        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "warning_type": data.get("type", "Unknown"),
+        "spirit_score": data.get("score", 0),
+        "perclos": data.get("perclos", 0)
+    }
+    
+    fatigue_logs.append(event)
+    
+    # 在後端終端機印出警告，證明伺服器有收到
+    print(f"🚨 [伺服器接收] {event['time']} | 警告: {event['warning_type']} | 分數: {event['spirit_score']}")
+    
+    return jsonify({"status": "success", "message": "已將紀錄存入伺服器"})
 
-@app.route('/force_recalibrate', methods=['POST'])
-def force_recalibrate():
-    engine.force_recalibrate()
-    return jsonify({"status": "success", "message": "重新校正中，請直視前方..."})
-
-@app.route('/toggle_landmarks', methods=['POST'])
-def toggle_landmarks():
-    status = engine.toggle_landmarks()
-    msg = "✅ 特徵點顯示已開啟" if status else "❌ 特徵點顯示已關閉"
-    return jsonify({"status": "success", "message": msg})
-
-@app.route('/generate_report', methods=['POST'])
-def generate_report():
-    # 將耗時的報表生成任務放到背景執行緒，避免網頁請求被卡住
-    thread = Thread(target=engine.generate_report)
-    thread.start()
-    return jsonify({"status": "success", "message": "✅ 指令已送出！報表將於背景生成..."})
-
-@app.route('/report_image')
-def report_image():
-    """回傳生成的圖表給網頁前端顯示"""
-    if os.path.exists('fatigue_report.png'):
-        return send_file('fatigue_report.png', mimetype='image/png')
-    return "尚未生成報告", 404
-
-@app.route('/realtime_data')
-def realtime_data():
-    """回傳即時狀態數據給前端畫圖 (擷取最新 100 筆)"""
-    return jsonify(engine.get_realtime_data(100))
-
-@app.route('/toggle_aspect_ratio', methods=['POST'])
-def toggle_aspect_ratio():
-    """切換畫面比例 16:9 / 9:16 的 API"""
-    global current_obs_mode, camera_mode_changed
-    current_obs_mode = "16:9" if current_obs_mode == "9:16" else "9:16"
-    camera_mode_changed = True
-    return jsonify({"status": "success", "message": f"✅ 已切換為 {current_obs_mode} 模式，相機重新啟動中..."})
+@app.route('/api/get_report', methods=['GET'])
+def get_report():
+    """(擴充功能) 供車隊後台查看今天的違規紀錄"""
+    return jsonify({
+        "total_warnings": len(fatigue_logs),
+        "logs": fatigue_logs
+    })
 
 if __name__ == '__main__':
-    print("伺服器啟動中，請打開瀏覽器前往 http://localhost:5000")
-    # 這裡務必設定 debug=False，以避免 MediaPipe 與 Flask 的 reload 執行緒衝突
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    print("🚀 輕量化 API 伺服器啟動中... 請前往 http://127.0.0.1:5000")
+    # 開啟 debug=True 方便開發
+    app.run(host='0.0.0.0', port=5000, debug=True)
